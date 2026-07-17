@@ -1,0 +1,11 @@
+/libfprint
+/goodix53x5-libfprint/
+/goodix-some-other-re-driver/
+
+# RE binaries / captures / ghidra (not source)
+/gfspi.inf_amd64_9b379ce317eda6c3/
+/goodix-ghidra/
+/*.log
+/*.txt
+/enrollverify_last.log
+/workdir

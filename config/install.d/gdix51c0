@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Emit GDIX51C0-specific fprintd environment and device-access settings.
+
+set -euo pipefail
+
+MODE="${1:-emit}"
+GOODIX_TLS_PSK_HEX="${GOODIX_TLS_PSK_HEX:-}"
+GPIOCHIP="${GDIX51C0_GPIOCHIP:-/dev/gpiochip0}"
+DEVELOPER="${GOODIX_SPI_DEVELOPER:-0}"
+
+emit_environment() {
+  local name="$1" value="$2"
+
+  case "$value" in
+    *$'\n'*)
+      printf 'Error: %s contains a newline and cannot be written to a systemd drop-in.\n' "$name" >&2
+      exit 2
+      ;;
+  esac
+  printf 'Environment=%s=%s\n' "$name" "$value"
+}
+
+if [ -n "$GOODIX_TLS_PSK_HEX" ] &&
+   [[ ! "$GOODIX_TLS_PSK_HEX" =~ ^[[:xdigit:]]{64}$ ]]; then
+  printf 'Error: GOODIX_TLS_PSK_HEX must contain exactly 64 hexadecimal characters.\n' >&2
+  exit 2
+fi
+
+if [[ ! "$GPIOCHIP" =~ ^/dev/gpiochip[0-9]+$ ]]; then
+  printf 'Error: GDIX51C0_GPIOCHIP must be an absolute /dev/gpiochipN path.\n' >&2
+  exit 2
+fi
+
+case "$DEVELOPER" in
+  0|1) ;;
+  *)
+    printf 'Error: GOODIX_SPI_DEVELOPER must be 0 or 1.\n' >&2
+    exit 2
+    ;;
+esac
+
+if [ "$MODE" = "purge" ]; then
+  printf '%s\n' \
+    "${GDIX51C0_PSK_STATE_FILE:-/var/lib/fprint/gdix51c0.psk}" \
+    "${GDIX51C0_CHICAGO_CALIBRATION_FILE:-/var/lib/fprint/gdix51c0-calibration.bin}" \
+    "/var/lib/fprint/gdix51c0-image-base.bin" \
+    "/var/lib/fprint/gdix51c0-dark-frame.bin"
+  exit 0
+fi
+
+if [ "$MODE" = "seed-state" ]; then
+  output="${2:-}"
+  [ -n "$output" ] || {
+    printf 'Usage: %s seed-state OUTPUT\n' "$0" >&2
+    exit 2
+  }
+  # Exit 3 means this hook has no state to seed. The generic installer
+  # distinguishes that from malformed input or an actual hook failure.
+  [ -n "$GOODIX_TLS_PSK_HEX" ] || exit 3
+  printf '%s\n' "$GOODIX_TLS_PSK_HEX" > "$output"
+  chmod 0600 "$output"
+  printf '%s\n' "${GDIX51C0_PSK_STATE_FILE:-/var/lib/fprint/gdix51c0.psk}"
+  exit 0
+fi
+
+if [ "$MODE" = "check" ]; then
+  printf 'GDIX51C0 environment: OK (GPIO %s)\n' "$GPIOCHIP" >&2
+  exit 0
+fi
+if [ "$MODE" != "emit" ]; then
+  printf 'Usage: %s [check|emit|purge|seed-state OUTPUT]\n' "$0" >&2
+  exit 2
+fi
+
+if [ -n "$GOODIX_TLS_PSK_HEX" ]; then
+  printf 'Environment=GDIX51C0_PROVISION_PSK=random\n'
+  printf 'Seeded the GDIX51C0 PSK in root-only state; guarded stale-sensor repair enabled.\n' >&2
+else
+  printf 'Environment=GDIX51C0_PROVISION_PSK=random\n'
+  printf 'GDIX51C0 will provision and persist a random PSK on first use.\n' >&2
+fi
+
+# Only persist the small, reviewed production configuration surface.  Fault
+# injection and matcher/protocol tuning variables are intentionally excluded.
+for name in \
+  GDIX51C0_GPIOCHIP \
+  GDIX51C0_IRQ_LINE \
+  GDIX51C0_RESET_LINE \
+  GDIX51C0_PSK_STATE_FILE \
+  GDIX51C0_CHICAGO_CALIBRATION_FILE; do
+  if [ -n "${!name:-}" ]; then
+    emit_environment "$name" "${!name}"
+  fi
+done
+
+if [ "$DEVELOPER" = "1" ]; then
+  if [ -n "${GDIX51C0_CAPTURE_NOFINGER:-}" ]; then
+    emit_environment GDIX51C0_DUMP_FRAMES 1
+    emit_environment GDIX51C0_FORCE_DARK_FRAME 1
+  elif [ -n "${GDIX51C0_DUMP_FRAMES:-}" ]; then
+    emit_environment GDIX51C0_DUMP_FRAMES 1
+  fi
+  if [ -n "${GDIX51C0_DUMP_DIR:-}" ]; then
+    emit_environment GDIX51C0_DUMP_DIR "$GDIX51C0_DUMP_DIR"
+  fi
+fi
+printf 'DeviceAllow=%s rw\n' "$GPIOCHIP"

@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Repository quality
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install quality dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            ca-certificates \
+            shellcheck \
+            zsh
+
+      - name: Run repository checks
+        env:
+          CI_WORK_ROOT: ${{ runner.temp }}
+        run: ./scripts/ci/check.sh
+
+  build:
+    name: Clean libfprint build and tests
+    runs-on: ubuntu-24.04
+    container: fedora:43
+    steps:
+      - name: Install build dependencies
+        run: |
+          dnf install --assumeyes --setopt=install_weak_deps=False \
+            gcc \
+            gcc-c++ \
+            git \
+            libgpiod-devel \
+            glib2-devel \
+            libgudev-devel \
+            libgusb-devel \
+            openssl-devel \
+            polkit-devel \
+            systemd-devel \
+            meson \
+            ninja-build \
+            pkgconf-pkg-config
+
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Build and test
+        env:
+          CI_WORK_ROOT: /tmp
+        run: ./scripts/ci/run.sh

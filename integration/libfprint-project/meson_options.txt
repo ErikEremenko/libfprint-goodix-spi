@@ -1,0 +1,4 @@
+option('goodix_spi_developer',
+       description: 'Enable developer-only Goodix SPI capture dumps, tuning knobs, and fault injection',
+       type: 'boolean',
+       value: false)

@@ -1,0 +1,16 @@
+# proprietary DLL (user supplies from their own Windows driver) + build artifacts
+*.dll
+*.exe
+*.o
+# captured sensor frames + oracle outputs (fingerprint data — do not commit)
+*.raw
+*.pgm
+run.out
+run.err
+backtrace.txt
+*.png
+re/algo-oracle/*.dll
+re/algo-oracle/*.exe
+re/algo-oracle/v302/
+re/algo-oracle/real_b*.bin
+re/algo-oracle/*.raw

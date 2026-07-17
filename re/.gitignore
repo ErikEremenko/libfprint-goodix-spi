@@ -1,0 +1,23 @@
+# RE binary artifacts and generated data -- keep source (.c/.py/.js/.md) only
+*.exe
+*.dll
+*.bin
+*.raw
+*.feat
+*.dat
+*.log
+*.png
+*.pgm
+*.mdmp
+__pycache__/
+ghidra-out/
+frida-*.txt
+algo-oracle/*backtrace*.txt
+algo-oracle/newraws/
+algo-oracle/newdac/
+algo-oracle/feats/
+algo-oracle/v302/
+enhanced_png/
+private/
+*.otp
+*.rep/
