@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+/* Copyright (C) 2026 Berke Kabagöz <berkekbgz@gmail.com> */
+
 /* Native exploratory mirror of AlgoChicago+0x5ea80 under-capacity study. */
 
 #include <stdio.h>

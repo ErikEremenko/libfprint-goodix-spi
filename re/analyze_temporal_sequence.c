@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+/* Copyright (C) 2026 Berke Kabagöz <berkekbgz@gmail.com> */
+
 /* Native sequential-preprocessing parity probe.  RE tooling only. */
 
 #include <stdio.h>

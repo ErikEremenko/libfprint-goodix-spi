@@ -4,11 +4,6 @@
  *
  * Copyright (C) 2026 Berke Kabagöz <berkekbgz@gmail.com>
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
- *
  * Reimplements gfspi.dll whitebox_wrap (@0x180006bb0).  Statically the routine
  * is a white-box, but it reduces to standard AES-256-GCM + HMAC-SHA256 with
  * three constants recovered from the DLL (re/PARITY.md). Layout of the

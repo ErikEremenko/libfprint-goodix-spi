@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+/* Copyright (C) 2026 Berke Kabagöz <berkekbgz@gmail.com> */
+
 /* Replay an ordered raw capture stream through the native live enrollment path. */
 
 #include <stdio.h>

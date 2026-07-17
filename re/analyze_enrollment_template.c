@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+/* Copyright (C) 2026 Berke Kabagöz <berkekbgz@gmail.com> */
+
 /* Inspect decoded records from a packed native or official Chicago template. */
 
 #include <stdio.h>

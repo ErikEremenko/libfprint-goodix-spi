@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+/* Copyright (C) 2026 Berke Kabagöz <berkekbgz@gmail.com> */
+
 /* Build a native two-capture Chicago enrollment for DLL parity comparison. */
 
 #include <stdio.h>

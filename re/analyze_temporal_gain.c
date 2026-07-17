@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+/* Copyright (C) 2026 Berke Kabagöz <berkekbgz@gmail.com> */
+
 /* Test whether AlgoChicago's persistent 5,120-word plane is the gain plane
  * consumed by the recovered native preprocessor.  This is RE tooling, not a
  * driver component. */

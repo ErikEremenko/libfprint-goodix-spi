@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+/* Copyright (C) 2026 Berke Kabagöz <berkekbgz@gmail.com> */
+
 /* Dump native sequential preprocessing planes used while recovering the
  * AlgoChicago mode-0x18 four-class map generator. RE tooling only. */
 

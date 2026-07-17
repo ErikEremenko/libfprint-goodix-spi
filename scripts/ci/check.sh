@@ -16,11 +16,15 @@ EMPTY_TREE="$(git hash-object -t tree /dev/null)"
 git diff --check "$EMPTY_TREE"
 
 mapfile -d '' source_files < <(
-  find drivers lib tests -type f \( -name '*.c' -o -name '*.h' \) -print0
+  git ls-files -z -- '*.c' '*.h'
 )
 for source_file in "${source_files[@]}"; do
   if ! grep -Fq 'SPDX-License-Identifier: LGPL-2.1-or-later' "$source_file"; then
     printf 'Error: %s has no LGPL-2.1-or-later SPDX identifier.\n' "$source_file" >&2
+    exit 1
+  fi
+  if ! grep -Fqi 'Copyright' "$source_file"; then
+    printf 'Error: %s has no copyright notice.\n' "$source_file" >&2
     exit 1
   fi
 done

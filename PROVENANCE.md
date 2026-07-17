@@ -102,11 +102,14 @@ boundary.
 
 ## Attribution policy
 
+- Project-original C and header files use a concise SPDX license identifier
+  followed by their copyright notice. Adapted files may also retain the
+  original project's longer license boilerplate.
 - Files copied or adapted from free software retain the original copyright and
   license notices, followed by Berke Kabagöz's notice for the new work.
 - Files written from protocol facts, observed behavior, or test results carry
   the new implementation's notice; the behavioral source is recorded here.
 - A repository reference is not treated as permission to copy material that is
   unlicensed or owned by a third party.
-- New source files should include an SPDX identifier matching their actual
-  license before a public release.
+- New C and header files must include an SPDX identifier and copyright notice
+  matching their actual provenance before a public release.
