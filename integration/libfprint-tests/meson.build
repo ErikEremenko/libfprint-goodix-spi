@@ -54,6 +54,8 @@ goodix_out_of_tree_tests = {
     ],
     'goodix-chicago-match' : [
         'goodix-chicago/test-goodix-chicago-match.c',
+        '../../libfprint/lib/goodix/chicago/goodix-chicago-late-rejection-compat.c',
+        '../../libfprint/lib/goodix/chicago/goodix-chicago-late-rejection.c',
         '../../libfprint/lib/goodix/chicago/goodix-chicago-match.c',
         '../../libfprint/lib/goodix/chicago/goodix-chicago-runtime.c',
         '../../libfprint/lib/goodix/chicago/goodix-chicago-enrollment.c',

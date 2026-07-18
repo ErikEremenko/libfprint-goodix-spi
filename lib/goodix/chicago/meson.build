@@ -5,6 +5,8 @@ goodix_chicago_sources = files(
     'goodix-chicago-preprocess.c',
     'goodix-chicago-feature.c',
     'goodix-chicago-enrollment.c',
+    'goodix-chicago-late-rejection-compat.c',
+    'goodix-chicago-late-rejection.c',
     'goodix-chicago-match.c',
     'goodix-chicago-runtime.c',
     'goodix-chicago-bir.c',

@@ -110,6 +110,7 @@ typedef struct
   gint32 width;
   gint32 height;
   gint32 probe_quality;
+  gint32 template_type;
   gint32 record[0x68 / 4];
   gint32 transform[6];
   gint32 state[3];
@@ -120,7 +121,7 @@ typedef struct
   gint32 flag_out;
 } RejectionCorpusVector;
 
-G_STATIC_ASSERT (sizeof (RejectionCorpusVector) == 172);
+G_STATIC_ASSERT (sizeof (RejectionCorpusVector) == 176);
 
 typedef struct
 {
@@ -890,6 +891,27 @@ test_late_rejection_type24 (void)
     g_assert_cmpint (flag, ==, 1);
   }
 
+  /* A high auxiliary count with a low candidate count follows a separate
+   * official gate. This vector caught that branch when the shared oracle was
+   * expanded beyond the original type-24 sample set. */
+  {
+    static const gint32 transform[6] = {
+      284, -24, -2386, -5, 282, -580,
+    };
+    static const gint32 values[0x68 / 4] = {
+      33, 30, 0, 0, 157, 124, 162, 242, 108, 120, 80, 66, 0,
+      1, 1, 284, -24, -2386, -5, 282, -580, 40, 94, 66, 89, 0,
+    };
+    gint32 rejection_count = 7;
+    gint32 flag = 1;
+
+    g_assert_true (goodix_chicago_match_late_rejection_type24 (
+      80, 64, 62, (const GoodixChicagoMatchScoreRecord *) values,
+      transform, 0, 0, 5, &rejection_count, &flag));
+    g_assert_cmpint (rejection_count, ==, 8);
+    g_assert_cmpint (flag, ==, 1);
+  }
+
   for (gint axis = 0; axis < 3; axis++)
     for (gint32 value = 0; value <= 8; value++)
       {
@@ -923,7 +945,7 @@ test_late_rejection_type24 (void)
 }
 
 static void
-test_late_rejection_type24_oracle (void)
+test_late_rejection_oracle (void)
 {
   const gchar *path = g_getenv ("CHICAGO_MATCH_REJECTION_VECTOR");
   g_autofree gchar *contents = NULL;
@@ -942,7 +964,7 @@ test_late_rejection_type24_oracle (void)
   g_assert_cmpuint (size, >=, sizeof (*header));
   header = (const RejectionCorpusHeader *) contents;
   g_assert_cmphex (header->magic, ==, 0x34523243u);
-  g_assert_cmpuint (header->version, ==, 1);
+  g_assert_cmpuint (header->version, ==, 2);
   g_assert_cmpuint (header->reserved, ==, 0);
   g_assert_cmpuint (size, ==, sizeof (*header) +
                     (gsize) header->count * sizeof (*vectors));
@@ -953,17 +975,23 @@ test_late_rejection_type24_oracle (void)
       gint32 flag = vectors[index].flag_in;
       gboolean rejected;
 
-      rejected = goodix_chicago_match_late_rejection_type24 (
+      rejected = goodix_chicago_match_late_rejection (
+        vectors[index].template_type,
         vectors[index].width, vectors[index].height,
         vectors[index].probe_quality,
         (const GoodixChicagoMatchScoreRecord *) vectors[index].record,
         vectors[index].transform, vectors[index].state[0],
         vectors[index].state[1], vectors[index].state[2],
         &rejection_count, &flag);
-      g_assert_cmpint (rejected, ==, vectors[index].rejected);
-      g_assert_cmpint (rejection_count, ==,
-                       vectors[index].rejection_count_out);
-      g_assert_cmpint (flag, ==, vectors[index].flag_out);
+      if (rejected != vectors[index].rejected ||
+          rejection_count != vectors[index].rejection_count_out ||
+          flag != vectors[index].flag_out)
+        g_error ("late-rejection oracle mismatch at vector %u, type %d: "
+                 "rejected %d/%d, count %d/%d, flag %d/%d",
+                 index, vectors[index].template_type,
+                 rejected, vectors[index].rejected,
+                 rejection_count, vectors[index].rejection_count_out,
+                 flag, vectors[index].flag_out);
     }
 }
 
@@ -1757,8 +1785,8 @@ main (int   argc,
                    test_transform_overlap_area_type24);
   g_test_add_func ("/gdix51c0/chicago-match/late-rejection-type24",
                    test_late_rejection_type24);
-  g_test_add_func ("/gdix51c0/chicago-match/late-rejection-type24-oracle",
-                   test_late_rejection_type24_oracle);
+  g_test_add_func ("/gdix51c0/chicago-match/late-rejection-oracle",
+                   test_late_rejection_oracle);
   g_test_add_func ("/gdix51c0/chicago-match/scheduler-auxiliary-type24",
                    test_scheduler_auxiliary_type24);
   g_test_add_func ("/gdix51c0/chicago-match/fallback-geometry-records",

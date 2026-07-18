@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 /* Copyright (C) 2026 Berke Kabagöz <berkekbgz@gmail.com> */
-/* Direct behavioral oracle for the type-24 late rejection predicate at
+/* Direct behavioral oracle for the shared late-rejection predicate at
  * AlgoChicago+0x2ce50.  This is intentionally linked at run time so the
  * production DLL remains unmodified.
  *
@@ -15,8 +15,11 @@
 #include <stdio.h>
 #include <string.h>
 
-typedef int (*type24_rejection_t) (int32_t *, int32_t *, int32_t, int32_t *,
-                                   int32_t *, int32_t *, int32_t *);
+typedef int (*late_rejection_t) (int32_t *, int32_t *, int32_t, int32_t *,
+                                 int32_t *, int32_t *, int32_t *);
+
+#define CORPUS_SAMPLES_PER_TYPE 4096u
+#define CORPUS_TEMPLATE_TYPE_COUNT 6u
 
 typedef struct
 {
@@ -41,6 +44,7 @@ typedef struct
   int32_t width;
   int32_t height;
   int32_t probe_quality;
+  int32_t template_type;
   int32_t record[0x68 / 4];
   int32_t transform[6];
   int32_t state[3];
@@ -93,7 +97,7 @@ initialize_baseline (rejection_vector_t *vector)
 }
 
 static void
-run_vector (type24_rejection_t rejection, const char *axis, int32_t value,
+run_vector (late_rejection_t rejection, const char *axis, int32_t value,
             rejection_vector_t *vector)
 {
   int32_t rejected = rejection (vector->probe, vector->record, 24,
@@ -106,10 +110,12 @@ run_vector (type24_rejection_t rejection, const char *axis, int32_t value,
 }
 
 static int
-write_random_corpus (type24_rejection_t rejection, const char *path)
+write_random_corpus (late_rejection_t rejection, const char *path)
 {
+  static const int32_t template_types[] = { 7, 10, 23, 24, 25, 26 };
   const rejection_corpus_header_t header = {
-    0x34523243u, 1, 512, 0,
+    0x34523243u, 2,
+    CORPUS_SAMPLES_PER_TYPE * CORPUS_TEMPLATE_TYPE_COUNT, 0,
   };
   FILE *file = fopen (path, "wb");
 
@@ -119,55 +125,59 @@ write_random_corpus (type24_rejection_t rejection, const char *path)
       return 2;
     }
   fwrite (&header, sizeof (header), 1, file);
-  for (uint32_t index = 0; index < header.count; index++)
-    {
-      rejection_vector_t baseline;
-      rejection_corpus_vector_t vector = { 0, };
+  for (uint32_t type_index = 0;
+       type_index < sizeof (template_types) / sizeof (template_types[0]);
+       type_index++)
+    for (uint32_t sample = 0; sample < CORPUS_SAMPLES_PER_TYPE; sample++)
+      {
+        rejection_vector_t baseline;
+        rejection_corpus_vector_t vector = { 0, };
 
-      initialize_baseline (&baseline);
-      vector.width = 80;
-      vector.height = 64;
-      vector.probe_quality = random_range (0, 100);
-      memcpy (vector.record, baseline.record, sizeof (vector.record));
-      vector.record[0] = random_range (0, 42);
-      vector.record[1] = random_range (0, 42);
-      vector.record[4] = random_range (150, 260);
-      vector.record[5] = random_range (100, 260);
-      vector.record[6] = random_range (100, 260);
-      vector.record[7] = random_range (80, 260);
-      vector.record[8] = random_range (100, 260);
-      vector.record[9] = random_range (0, 150);
-      vector.record[10] = random_range (0, 100);
-      vector.record[11] = random_range (0, 100);
-      vector.record[13] = random_range (0, 1);
-      vector.record[14] = random_range (0, 1);
-      vector.record[21] = random_range (0, 100);
-      vector.record[22] = random_range (65, 100);
-      vector.record[23] = random_range (0, 100);
-      vector.record[24] = random_range (65, 100);
-      vector.transform[0] = random_range (180, 320);
-      vector.transform[1] = random_range (-64, 64);
-      vector.transform[2] = random_range (-12000, 12000);
-      vector.transform[3] = random_range (-64, 64);
-      vector.transform[4] = random_range (180, 320);
-      vector.transform[5] = random_range (-12000, 12000);
-      memcpy (&vector.record[15], vector.transform,
-              sizeof (vector.transform));
-      vector.state[0] = random_range (0, 8);
-      vector.state[1] = random_range (0, 8);
-      vector.state[2] = random_range (0, 8);
-      vector.rejection_count_in = random_range (0, 8);
-      vector.flag_in = random_range (0, 2);
-      vector.rejection_count_out = vector.rejection_count_in;
-      vector.flag_out = vector.flag_in;
-      vector.rejected = rejection (
-        (int32_t[]) { 80, 64, [0x43] = vector.probe_quality },
-        vector.record, 24, vector.transform, vector.state,
-        &vector.rejection_count_out, &vector.flag_out);
-      fwrite (&vector, sizeof (vector), 1, file);
-    }
+        initialize_baseline (&baseline);
+        vector.width = 80;
+        vector.height = 64;
+        vector.probe_quality = random_range (0, 100);
+        vector.template_type = template_types[type_index];
+        memcpy (vector.record, baseline.record, sizeof (vector.record));
+        vector.record[0] = random_range (0, 42);
+        vector.record[1] = random_range (0, 42);
+        vector.record[4] = random_range (150, 260);
+        vector.record[5] = random_range (100, 260);
+        vector.record[6] = random_range (100, 260);
+        vector.record[7] = random_range (80, 260);
+        vector.record[8] = random_range (100, 260);
+        vector.record[9] = random_range (0, 150);
+        vector.record[10] = random_range (0, 100);
+        vector.record[11] = random_range (0, 100);
+        vector.record[13] = random_range (0, 1);
+        vector.record[14] = random_range (0, 1);
+        vector.record[21] = random_range (0, 100);
+        vector.record[22] = random_range (65, 100);
+        vector.record[23] = random_range (0, 100);
+        vector.record[24] = random_range (65, 100);
+        vector.transform[0] = random_range (180, 320);
+        vector.transform[1] = random_range (-64, 64);
+        vector.transform[2] = random_range (-12000, 12000);
+        vector.transform[3] = random_range (-64, 64);
+        vector.transform[4] = random_range (180, 320);
+        vector.transform[5] = random_range (-12000, 12000);
+        memcpy (&vector.record[15], vector.transform,
+                sizeof (vector.transform));
+        vector.state[0] = random_range (0, 8);
+        vector.state[1] = random_range (0, 8);
+        vector.state[2] = random_range (0, 8);
+        vector.rejection_count_in = random_range (0, 8);
+        vector.flag_in = random_range (0, 2);
+        vector.rejection_count_out = vector.rejection_count_in;
+        vector.flag_out = vector.flag_in;
+        vector.rejected = rejection (
+          (int32_t[]) { 80, 64, [0x43] = vector.probe_quality },
+          vector.record, vector.template_type, vector.transform, vector.state,
+          &vector.rejection_count_out, &vector.flag_out);
+        fwrite (&vector, sizeof (vector), 1, file);
+      }
   fclose (file);
-  printf ("wrote type-24 rejection corpus: %lu vectors -> %s\n",
+  printf ("wrote shared rejection corpus: %lu vectors across 6 modes -> %s\n",
           (unsigned long) header.count, path);
   return 0;
 }
@@ -176,7 +186,7 @@ int
 main (void)
 {
   HMODULE module = LoadLibraryA ("AlgoChicago.dll");
-  type24_rejection_t rejection;
+  late_rejection_t rejection;
   rejection_vector_t vector;
 
   if (!module)
@@ -185,7 +195,7 @@ main (void)
                GetLastError ());
       return 1;
     }
-  rejection = (type24_rejection_t) ((unsigned char *) module + 0x2ce50);
+  rejection = (late_rejection_t) ((unsigned char *) module + 0x2ce50);
   if (getenv ("CHICAGO_REJECTION_VECTOR"))
     return write_random_corpus (rejection,
                                 getenv ("CHICAGO_REJECTION_VECTOR"));
