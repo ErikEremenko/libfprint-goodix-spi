@@ -298,6 +298,23 @@ gint32 goodix_chicago_match_bidirectional_overlap_area_type24 (
   guint         height,
   const gint32 transform[6]);
 
+/* Shared late candidate rejection policy at AlgoChicago+0x2ce50. The
+ * production helper serves algorithm template types 7, 10, and 23..26.
+ * Modes without a named specialization retain the literal official control
+ * flow until they have their own differential oracle and reviewed cleanup. */
+gboolean goodix_chicago_match_late_rejection (
+  guint                                  template_type,
+  guint                                  width,
+  guint                                  height,
+  gint32                                 probe_quality,
+  const GoodixChicagoMatchScoreRecord *record,
+  const gint32                           transform[6],
+  gint32                                 current_auxiliary,
+  gint32                                 candidate_auxiliary,
+  gint32                                 combined_auxiliary,
+  gint32                                *rejection_count,
+  gint32                                *status_flag);
+
 /* Exact type-24 branch of the late candidate rejection policy at
  * AlgoChicago+0x2ce50. The return value is the DLL's rejection bit; a true
  * result also increments @rejection_count once. @status_flag may be cleared
