@@ -19,8 +19,9 @@ WINEPATH="$(WINEDEBUG=-all winepath -w "$driver")" \
 CHICAGO_REJECTION_VECTOR="$(WINEDEBUG=-all winepath -w "$vector")" \
 WINEDEBUG=-all wine "$oracle/chicago_type24_rejection_oracle.exe"
 
+"$root/scripts/libfprint/prepare-tree.sh" "${build:h}"
 meson compile -C "$build" test-goodix-chicago-match
 CHICAGO_MATCH_REJECTION_VECTOR="$vector" \
-  "$build/tests/test-goodix-chicago-match" \
+  "$build/tests/goodix-spi/test-goodix-chicago-match" \
   -p /gdix51c0/chicago-match/late-rejection-type24-oracle
 print -- "type-24 late-rejection parity: 512/512 exact (AlgoChicago+0x2ce50)"
