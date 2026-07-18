@@ -55,7 +55,7 @@ PSK_BEFORE="$(sudo sha256sum /var/lib/fprint/gdix51c0.psk 2>/dev/null |
 if [ "$MODE" = "idle" ]; then
   printf 'Run the pre-suspend verification.\n\n'
   run_verify_match "$PRE_OUTPUT"
-  printf '\nIdle path armed: the fingerprint action and device are now closed.\n'
+  printf '\nIdle path armed: the action is released and the device remains prewarmed.\n'
 else
   printf 'Starting verification with no finger present; it must remain parked until resume.\n'
   fprintd-verify >"$ACTIVE_OUTPUT" 2>&1 &
@@ -63,9 +63,10 @@ else
 
   ACTION_READY=0
   for _ in $(seq 1 80); do
-    sudo journalctl -b -u fprintd -o cat --since "$START_TIME" \
-      >"$LIFECYCLE_LOG"
-    if grep -q 'FDT-down ACK read' "$LIFECYCLE_LOG"; then
+    if busctl get-property net.reactivated.Fprint \
+         /net/reactivated/Fprint/Device/0 \
+         net.reactivated.Fprint.Device finger-needed 2>/dev/null |
+       grep -q 'true$'; then
       ACTION_READY=1
       break
     fi
@@ -112,21 +113,23 @@ run_verify_match "$POST_OUTPUT"
 
 sudo journalctl -b -u fprintd -o cat --since "$POST_RESUME_TIME" \
   >"$POST_RESUME_LOG"
-if ! grep -q 'cold boundary (device open)' "$POST_RESUME_LOG"; then
-  printf 'Error: first post-resume verification did not cross a cold device-open boundary.\n' >&2
-  exit 1
+if [ "$MODE" = "idle" ]; then
+  if ! grep -q 'Reopened warm fingerprint device after resume' "$POST_RESUME_LOG"; then
+    printf 'Error: idle resume did not reopen and prewarm the device.\n' >&2
+    exit 1
+  fi
 fi
 
 sudo journalctl -b -u fprintd -o cat --since "$START_TIME" \
   >"$LIFECYCLE_LOG"
 if [ "$MODE" = "active" ] &&
-   ! grep -q 'suspend requested; parking active action until resume' "$LIFECYCLE_LOG"; then
+   ! grep -q 'Suspending active warm fingerprint action' "$LIFECYCLE_LOG"; then
   printf 'Error: active suspend did not invoke the driver suspend callback.\n' >&2
   exit 1
 fi
 
 if [ "$MODE" = "active" ] &&
-   ! grep -q 'resume requested; cancelling parked action after resume' "$LIFECYCLE_LOG"; then
+   ! grep -q 'Resuming active warm fingerprint action' "$LIFECYCLE_LOG"; then
   printf 'Error: active resume did not cancel the parked action.\n' >&2
   exit 1
 fi
@@ -140,6 +143,6 @@ fi
 
 printf '\nSuspend/resume lifecycle evidence:\n\n'
 sudo journalctl -b -u fprintd -o short-precise --since "$START_TIME" |
-  grep -E 'Preparing devices for (sleep|resume)|suspend requested|resume requested|cold boundary|current action was cancelled|action thread exited|TLS handshake complete|init calibration pass done|persisted Chicago ImageBase|NeedUpdateImageBase|Chicago (verify|identify) score|verify_cb|error' || true
+  grep -E 'Prewarmed fingerprint device|Closed warm fingerprint device|Reopened warm fingerprint device|Suspending active warm fingerprint action|Resuming active warm fingerprint action|error' || true
 
-printf '\nPASS: %s suspend/resume returned to a matching cold-open session; persisted PSK unchanged.\n' "$MODE"
+printf '\nPASS: %s suspend/resume returned to a matching session; persisted PSK unchanged.\n' "$MODE"

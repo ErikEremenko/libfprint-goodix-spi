@@ -34,7 +34,7 @@ usage() {
   printf '\nOptions:\n'
   printf '  --check                 run preflight checks without changing the system\n'
   printf '  --skip-hardware-check   allow packaging/building without attached hardware\n'
-  printf '  --with-fprintd          install adaptive-template fprintd (default)\n'
+  printf '  --with-fprintd          install adaptive and warm-session fprintd (default)\n'
   printf '  --without-fprintd       keep the distro fprintd executable\n'
   printf '\nWithout a source path, the pinned upstream source is fetched into the cache.\n'
   printf 'Set GOODIX_SPI_DEBUG=1 only when verbose libfprint diagnostics are needed.\n'
@@ -316,12 +316,12 @@ case "$INSTALL_ADAPTIVE_FPRINTD" in
   no|0|false) INSTALL_ADAPTIVE_FPRINTD=0 ;;
   ask|auto)
     if [ -t 0 ] && [ -t 1 ]; then
-      printf 'Replace fprintd with the adaptive-template persistence build? [Y/n] '
+      printf 'Replace fprintd with the adaptive and warm-session build? [Y/n] '
       read -r reply
       case "$reply" in n|N|no|NO|No) INSTALL_ADAPTIVE_FPRINTD=0 ;; *) INSTALL_ADAPTIVE_FPRINTD=1 ;; esac
     else
       INSTALL_ADAPTIVE_FPRINTD=1
-      printf 'Non-interactive install: installing adaptive-template fprintd by default.\n' >&2
+      printf 'Non-interactive install: installing adaptive and warm-session fprintd by default.\n' >&2
     fi
     ;;
   *) printf 'Error: INSTALL_ADAPTIVE_FPRINTD must be ask, yes, or no.\n' >&2; exit 2 ;;

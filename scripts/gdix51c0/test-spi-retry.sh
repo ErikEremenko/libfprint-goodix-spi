@@ -36,7 +36,7 @@ case "$MODE" in
     ;;
   psk)
     FAULT_ENV="GDIX51C0_FAULT_PSK_MISMATCH_ONCE=1"
-    EXPECTED="confirmed stale PSK schedules one repair; activation attempt 2 restores the persisted key and matches"
+    EXPECTED="confirmed stale PSK schedules one repair; verified restoration hard-resets before TLS and the fresh activation matches"
     NOTE="The PSK test alters one in-memory handshake key, then rewrites the same persisted Linux key once; it does not rotate or expose the key."
     ;;
   psk-budget)
@@ -87,4 +87,4 @@ fprintd-verify || true
 
 printf '\nExpected recovery: %s\n\n' "$EXPECTED"
 sudo journalctl -u fprintd -o short-precise --since "$START_TIME" |
-  grep -E 'armed one-shot|armed required-data|fault injection dropped|ACK timed out|ACK attempt|data response timed out|response wait failed|get-EVK attempt|get-evk-version required response read|image capture attempt|image read failed|T0 capture failed|mandatory post-TLS D4 failed|SSL_accept|PSK|authentication mismatch|auto-restoring|provision|fresh .*recovery budget|activation failed|TLS handshake complete|init calibration pass done|Chicago (verify|identify) score|error' || true
+  grep -E 'armed one-shot|armed required-data|fault injection dropped|ACK timed out|ACK attempt|data response timed out|response wait failed|get-EVK attempt|get-evk-version required response read|image capture attempt|image read failed|T0 capture failed|mandatory post-TLS D4 failed|SSL_accept|PSK|authentication mismatch|auto-restoring|provision|reset boundary|fresh .*recovery budget|activation failed|TLS handshake complete|init calibration pass done|Chicago (verify|identify) score|error' || true

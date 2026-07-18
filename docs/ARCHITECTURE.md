@@ -74,7 +74,7 @@ APIs. GDIX51C0 supplies its sensor-bound calibration, ImageBase and regrouped
 source module rather than installed as a public or independently versioned
 library.
 
-### fprintd persistence
+### fprintd persistence and warm sessions
 
 libfprint mutates a matched print in memory after eligible adaptive learning.
 The separate fprintd patch writes that changed serialization back only after a
@@ -82,7 +82,12 @@ successful match. This remains independent of repository branding.
 
 The patch snapshots candidate serializations before verify/identify and saves
 only the matched print when its bytes changed. Non-adaptive matchers do not
-cause writes. It targets fprintd `v1.94.5` and is installed by default;
+cause writes. It also opts GDIX51C0 into a persistent open lifecycle: fprintd
+prepares TLS and T0 during enumeration, retains a clean session across
+Claim/Release, closes it for suspend, and prewarms it again after resume. The
+warm path runs the normal no-finger T0 calibration pass, but does not arm
+FDT-down, wait for a finger, or invoke matching; those remain inside an
+authorized action. It targets fprintd `v1.94.5` and is installed by default;
 `./install.sh --without-fprintd` is the explicit opt-out. Libfprint upgrades
 do not require rebasing it unless fprintd's ownership or callback lifecycle
 also changes.

@@ -48,7 +48,7 @@ shellcheck --severity=error "${bash_files[@]}"
 FPRINTD_SOURCE_DIR="$WORK_DIR/fprintd" \
   "$REPO_DIR/scripts/fetch-fprintd.sh" >/dev/null
 git -C "$WORK_DIR/fprintd" apply --check \
-  "$REPO_DIR/patches/fprintd/1.94.5-adaptive-persistence.patch"
+  "$REPO_DIR/patches/fprintd/1.94.5-goodix-spi.patch"
 
 printf 'Repository hygiene, shell syntax, licensing, and fprintd patch checks passed.\n'
 printf 'Temporary check tree: %s\n' "$WORK_DIR"
