@@ -46,6 +46,7 @@ G_DECLARE_FINAL_TYPE (FpiDeviceGdix51c0, fpi_device_gdix51c0, FPI, DEVICE_GDIX51
 #define GDIX51C0_ENV_GPIOCHIP   "GDIX51C0_GPIOCHIP"
 #define GDIX51C0_ENV_IRQ_LINE   "GDIX51C0_IRQ_LINE"
 #define GDIX51C0_ENV_RESET_LINE "GDIX51C0_RESET_LINE"
+#define GDIX51C0_ENV_WARM_SESSION "GDIX51C0_WARM_SESSION"
 
 /* Optional host-side TLS PSK override, encoded as 32 bytes of hex. Normal
  * operation provisions and loads the root-owned persisted state below. */

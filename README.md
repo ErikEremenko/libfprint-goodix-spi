@@ -79,18 +79,19 @@ The installer:
 
 1. Fetches pinned libfprint and fprintd sources into
    `${XDG_CACHE_HOME:-$HOME/.cache}/goodix-spi-driver/sources`,
-2. Applies the libfprint integration and adaptive-persistence patches,
+2. Applies the libfprint and fprintd integration patches,
 3. Builds a shadow libfprint under
    `/opt/goodix-spi-driver/libfprint`,
 4. Builds the patched fprintd under `/opt/goodix-spi-driver/fprintd`,
-5. Configures fprintd to use both shadow builds,
+5. Configures fprintd to use both shadow builds and prewarm GDIX51C0,
 6. Restarts the daemon.
 
 > [!WARNING]\
 > The default installation patches fprintd so successful adaptive
-> `templateStudy` updates are saved to disk. The current Chicago template can
-> retain up to 50 captures. Use `./install.sh --without-fprintd` to keep the
-> distribution fprintd, which disables persistence of those learning updates.
+> `templateStudy` updates are saved to disk and the sensor can initialize in
+> the background. The current Chicago template can retain up to 50 captures.
+> Use `./install.sh --without-fprintd` to keep the distribution fprintd; this
+> disables both persistence of learning updates and background warm sessions.
 
 <br>
 

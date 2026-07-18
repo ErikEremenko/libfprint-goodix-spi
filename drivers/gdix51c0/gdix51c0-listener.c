@@ -8,18 +8,16 @@
 #define FP_COMPONENT "gdix51c0"
 
 #include <errno.h>
+#include <poll.h>
 #include <string.h>
+#include <sys/eventfd.h>
+#include <unistd.h>
 
 #include "drivers_api.h"
 
 #include "gdix51c0.h"
 #include "gdix51c0-listener.h"
 #include "gdix51c0-proto.h"
-
-/* How long the listener will sleep inside gpiod_line_request_wait_edge_events
- * before re-checking the stop flag.  Short enough that close() is responsive,
- * long enough that an idle bus doesn't spin. */
-#define LISTENER_POLL_NSEC (100 * 1000 * 1000ULL)  /* 100 ms */
 
 /* Maximum packets we'll keep buffered per cmd-byte queue.  The MCU should
  * never queue more than a handful of unread packets; if a sender disappears
@@ -47,6 +45,7 @@ struct Gdix51c0Listener
   struct gpiod_line_request      *irq_req;
   unsigned int                    irq_offset;
   struct gpiod_edge_event_buffer *irq_events;
+  int                             wake_fd;
 
   GThread *thread;
   gint     stop_requested;  /* atomic */
@@ -251,14 +250,22 @@ static gpointer
 listener_thread_main (gpointer user_data)
 {
   Gdix51c0Listener *self = user_data;
+  const int gpio_fd = gpiod_line_request_get_fd (self->irq_req);
+  struct pollfd poll_fds[] = {
+    { .fd = gpio_fd,       .events = POLLIN },
+    { .fd = self->wake_fd, .events = POLLIN },
+  };
 
   fp_dbg ("gdix51c0: listener thread starting");
 
+  /* A packet may already be holding IRQ high when the listener takes over
+   * from the synchronous TLS path. Drain it once before blocking for a new
+   * edge. */
+  listener_drain_irq_high (self);
+
   while (!g_atomic_int_get (&self->stop_requested))
     {
-      int ready =
-        gpiod_line_request_wait_edge_events (self->irq_req,
-                                             LISTENER_POLL_NSEC);
+      int ready = poll (poll_fds, G_N_ELEMENTS (poll_fds), -1);
 
       if (g_atomic_int_get (&self->stop_requested))
         break;
@@ -267,18 +274,28 @@ listener_thread_main (gpointer user_data)
         {
           if (errno == EINTR)
             continue;
-          fp_warn ("gdix51c0: listener wait_edge_events: errno=%d", errno);
+          fp_warn ("gdix51c0: listener poll: errno=%d", errno);
           g_usleep (5000);
           continue;
         }
 
-      if (ready > 0)
+      if (poll_fds[1].revents & POLLIN)
+        {
+          uint64_t wake_count;
+
+          (void) read (self->wake_fd, &wake_count, sizeof (wake_count));
+          poll_fds[1].revents = 0;
+          continue;
+        }
+
+      if (poll_fds[0].revents & POLLIN)
         {
           /* Drain the events buffer so it doesn't fill up; we don't
            * actually care which edges arrived — the IRQ level decides
            * whether there is a packet to read. */
           gpiod_line_request_read_edge_events (self->irq_req,
                                                self->irq_events, 16);
+          poll_fds[0].revents = 0;
         }
 
       listener_drain_irq_high (self);
@@ -303,6 +320,18 @@ gdix51c0_listener_new (FpDevice                       *dev,
   self->irq_req     = irq_req;
   self->irq_offset  = irq_offset;
   self->irq_events  = irq_events;
+  self->wake_fd     = eventfd (0, EFD_CLOEXEC | EFD_NONBLOCK);
+
+  if (self->wake_fd < 0)
+    {
+      g_set_error (error,
+                   G_IO_ERROR,
+                   g_io_error_from_errno (errno),
+                   "gdix51c0: listener eventfd failed: %s",
+                   g_strerror (errno));
+      g_free (self);
+      return NULL;
+    }
 
   g_mutex_init (&self->spi_lock);
   g_mutex_init (&self->dispatch_lock);
@@ -312,6 +341,7 @@ gdix51c0_listener_new (FpDevice                       *dev,
                                    listener_thread_main, self, error);
   if (!self->thread)
     {
+      close (self->wake_fd);
       g_mutex_clear (&self->spi_lock);
       g_mutex_clear (&self->dispatch_lock);
       g_cond_clear  (&self->cond);
@@ -332,12 +362,17 @@ gdix51c0_listener_free (Gdix51c0Listener *self)
 
   if (self->thread)
     {
-      /* Wake the thread by broadcasting on cond — it doesn't wait on this
-       * cond, but the short poll timeout in wait_edge_events will see the
-       * stop flag within LISTENER_POLL_NSEC. */
+      uint64_t wake_count = 1;
+
+      /* Wake the blocking poll immediately. This keeps an idle session fully
+       * event driven without making close wait for a periodic timeout. */
+      (void) write (self->wake_fd, &wake_count, sizeof (wake_count));
       g_thread_join (self->thread);
       self->thread = NULL;
     }
+
+  close (self->wake_fd);
+  self->wake_fd = -1;
 
   for (guint i = 0; i < G_N_ELEMENTS (self->queues); i++)
     {

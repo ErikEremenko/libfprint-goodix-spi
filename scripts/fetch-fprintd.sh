@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fetch the fprintd release supported by the adaptive-persistence patch.
+# Fetch the fprintd release supported by the Goodix SPI integration patch.
 
 set -euo pipefail
 

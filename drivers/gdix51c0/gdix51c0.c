@@ -213,8 +213,22 @@ typedef struct {
   GPtrArray           *identify_gallery;
 } Gdix51c0ActionThread;
 
+typedef struct {
+  FpDevice     *dev;
+  GMainContext *context;
+  GCancellable *cancellable;
+} Gdix51c0OpenThread;
+
+typedef struct {
+  FpDevice *dev;
+  GError   *error;
+} Gdix51c0OpenComplete;
+
 static gboolean gdix51c0_action_check_cancelled (FpiDeviceGdix51c0 *self,
                                                  GError           **error);
+static gboolean gdix51c0_session_activate (FpiDeviceGdix51c0 *self,
+                                           GError           **error);
+static void     gdix51c0_session_deactivate (FpiDeviceGdix51c0 *self);
 static void     gdix51c0_baseline_load (FpiDeviceGdix51c0 *self);
 static void     gdix51c0_baseline_save (FpiDeviceGdix51c0 *self);
 static void     gdix51c0_baseline_adopt_and_save (
@@ -386,6 +400,83 @@ gdix51c0_close_gpios (FpiDeviceGdix51c0 *self)
   g_clear_pointer (&self->gpio_chip,  gpiod_chip_close);
 }
 
+static void
+gdix51c0_open_thread_free (Gdix51c0OpenThread *open_thread)
+{
+  g_object_unref (open_thread->dev);
+  g_clear_pointer (&open_thread->context, g_main_context_unref);
+  g_clear_object (&open_thread->cancellable);
+  g_free (open_thread);
+}
+
+static void
+gdix51c0_open_complete_free (Gdix51c0OpenComplete *complete)
+{
+  g_object_unref (complete->dev);
+  g_clear_error (&complete->error);
+  g_free (complete);
+}
+
+static gboolean
+gdix51c0_open_complete_main (gpointer user_data)
+{
+  Gdix51c0OpenComplete *complete = user_data;
+  FpiDeviceGdix51c0 *self = FPI_DEVICE_GDIX51C0 (complete->dev);
+
+  g_clear_pointer (&self->action_context, g_main_context_unref);
+  g_clear_object (&self->action_cancellable);
+
+  if (complete->error)
+    {
+      /* The activation loop has already reset every failed session. Release
+       * the host handles so a later Claim can retry open from a clean state. */
+      g_clear_pointer (&self->listener, gdix51c0_listener_free);
+      if (self->tls_ready)
+        {
+          gdix51c0_tls_free (&self->tls);
+          self->tls_ready = FALSE;
+        }
+      g_clear_pointer (&self->chicago_preprocessor,
+                       goodix_chicago_preprocessor_free);
+      g_clear_pointer (&self->chicago_calibration, g_bytes_unref);
+      if (self->spi_fd >= 0)
+        {
+          close (self->spi_fd);
+          self->spi_fd = -1;
+        }
+      gdix51c0_close_gpios (self);
+      fpi_device_open_complete (complete->dev,
+                                g_steal_pointer (&complete->error));
+      return G_SOURCE_REMOVE;
+    }
+
+  fp_info ("gdix51c0: background warm session ready (TLS + T0)");
+  fpi_device_open_complete (complete->dev, NULL);
+  return G_SOURCE_REMOVE;
+}
+
+static gpointer
+gdix51c0_open_thread (gpointer user_data)
+{
+  Gdix51c0OpenThread *open_thread = user_data;
+  FpiDeviceGdix51c0 *self = FPI_DEVICE_GDIX51C0 (open_thread->dev);
+  Gdix51c0OpenComplete *complete = g_new0 (Gdix51c0OpenComplete, 1);
+
+  complete->dev = g_object_ref (open_thread->dev);
+  if (!gdix51c0_session_activate (self, &complete->error))
+    fp_warn ("gdix51c0: background warm activation failed: %s",
+             complete->error ? complete->error->message : "?");
+
+  g_main_context_invoke_full (
+    open_thread->context,
+    G_PRIORITY_DEFAULT,
+    gdix51c0_open_complete_main,
+    complete,
+    (GDestroyNotify) gdix51c0_open_complete_free);
+  gdix51c0_open_thread_free (open_thread);
+  return NULL;
+}
+
 /* ------------------------------------------------------------------ */
 /* Device open/close                                                   */
 /* ------------------------------------------------------------------ */
@@ -466,6 +557,47 @@ gdix51c0_open (FpDevice *dev)
 
   fpi_device_set_nr_enroll_stages (
     dev, GOODIX_CHICAGO_ENGINE_REQUIRED_SAMPLES);
+
+  {
+    const char *warm_session = g_getenv (GDIX51C0_ENV_WARM_SESSION);
+
+    if (warm_session && *warm_session && g_strcmp0 (warm_session, "0") != 0)
+      {
+        Gdix51c0OpenThread *open_thread = g_new0 (Gdix51c0OpenThread, 1);
+        GThread *thread;
+        GCancellable *cancellable = fpi_device_get_cancellable (dev);
+
+        open_thread->dev = g_object_ref (dev);
+        open_thread->context = g_main_context_ref_thread_default ();
+        open_thread->cancellable = cancellable ? g_object_ref (cancellable) : NULL;
+
+        g_clear_pointer (&self->action_context, g_main_context_unref);
+        g_clear_object (&self->action_cancellable);
+        self->action_context = g_main_context_ref (open_thread->context);
+        self->action_cancellable = open_thread->cancellable ?
+          g_object_ref (open_thread->cancellable) : NULL;
+
+        fp_info ("gdix51c0: starting background warm activation");
+        thread = g_thread_try_new ("gdix51c0-open",
+                                   gdix51c0_open_thread,
+                                   open_thread,
+                                   &err);
+        if (!thread)
+          {
+            gdix51c0_open_thread_free (open_thread);
+            g_clear_pointer (&self->action_context, g_main_context_unref);
+            g_clear_object (&self->action_cancellable);
+            close (self->spi_fd);
+            self->spi_fd = -1;
+            gdix51c0_close_gpios (self);
+            fpi_device_open_complete (dev, err);
+            return;
+          }
+
+        g_thread_unref (thread);
+        return;
+      }
+  }
 
   fpi_device_open_complete (dev, NULL);
 }
@@ -1159,7 +1291,6 @@ gdix51c0_load_psk (guint8 out[32], GError **err)
   return FALSE;
 }
 
-static void gdix51c0_session_deactivate (FpiDeviceGdix51c0 *self);
 static guint16 *gdix51c0_capture_image_raw (FpiDeviceGdix51c0 *self,
                                             guint8             cmd,
                                             gboolean           retry_image,
@@ -1170,7 +1301,9 @@ static gboolean gdix51c0_fdt_measure_base (FpiDeviceGdix51c0 *self,
 static gboolean gdix51c0_capture_nav_data (FpiDeviceGdix51c0 *self, GError **error);
 
 static gboolean
-gdix51c0_session_tls_start (FpiDeviceGdix51c0 *self, GError **error)
+gdix51c0_session_tls_start (FpiDeviceGdix51c0 *self,
+                            gboolean          *reset_required,
+                            GError           **error)
 {
   guint8 psk[32];
   guint8 mcu_psk[32];
@@ -1185,6 +1318,9 @@ gdix51c0_session_tls_start (FpiDeviceGdix51c0 *self, GError **error)
     .irq_req = self->irq_req, .irq_offset = self->irq_offset,
     .irq_events = self->irq_events,
   };
+
+  g_return_val_if_fail (reset_required != NULL, FALSE);
+  *reset_required = FALSE;
 
   /* Known PSK before any provisioning: env override wins, else persisted state. */
   {
@@ -1282,6 +1418,20 @@ gdix51c0_session_tls_start (FpiDeviceGdix51c0 *self, GError **error)
           memcpy (existing, want, sizeof (existing));
           have_existing = TRUE;
           psk_ready = TRUE;
+
+          /* A verified stale-key rewrite starts a new authentication epoch
+           * inside the MCU.  Real post-Windows hardware may acknowledge and
+           * verify the WB write but never raise the first TLS IRQ until it has
+           * crossed a hard-reset boundary.  Do not spend both 3 s TLS windows
+           * discovering that indirectly: let the activation loop reset now
+           * and run the complete pre-TLS sequence with the restored key. */
+          if (repair_requested)
+            {
+              *reset_required = TRUE;
+              fp_warn ("gdix51c0: verified PSK restoration requires a hard "
+                       "reset before TLS");
+              return TRUE;
+            }
         }
     }
 
@@ -1817,6 +1967,8 @@ gdix51c0_baseline_save (FpiDeviceGdix51c0 *self)
 static gboolean
 gdix51c0_session_activate_once (FpiDeviceGdix51c0 *self, GError **error)
 {
+  gboolean reset_required = FALSE;
+
   G_DEBUG_HERE ();
 
   gdix51c0_session_reset_capture_state (self);
@@ -1827,8 +1979,18 @@ gdix51c0_session_activate_once (FpiDeviceGdix51c0 *self, GError **error)
   if (!gdix51c0_init_sequence (self, error))
     return FALSE;
 
-  if (!gdix51c0_session_tls_start (self, error))
+  if (!gdix51c0_session_tls_start (self, &reset_required, error))
     return FALSE;
+
+  if (reset_required)
+    {
+      g_set_error_literal (error,
+                           G_IO_ERROR,
+                           G_IO_ERROR_BUSY,
+                           "gdix51c0: PSK restoration completed; hard-reset "
+                           "activation boundary required");
+      return FALSE;
+    }
 
   /* Bring the async listener up only after init+TLS finished synchronously.
    * From here until session_deactivate, every SPI read and IRQ wait goes
@@ -1897,15 +2059,15 @@ gdix51c0_session_activate_with_attempts (FpiDeviceGdix51c0 *self,
       if (repair_completed_now && !repair_budget_granted)
         {
           /* A verified stale-key rewrite is a new sensor-authentication epoch,
-           * not an ordinary transport retry. If a later stage in that same
-           * activation fails, give the newly keyed sensor one fresh bounded
-           * activation budget. This can happen only once per device open. */
+           * not an ordinary transport retry. session_tls_start deliberately
+           * stopped before TLS; session_deactivate has now hard-reset the MCU.
+           * Give the restored sensor one fresh bounded activation budget and
+           * continue immediately instead of adding the ordinary retry delay. */
           repair_budget_granted = TRUE;
           failures = 0;
           started_fresh_budget = TRUE;
-          fp_warn ("gdix51c0: activation failed after verified PSK restoration "
-                   "(%s); starting one fresh %u-attempt recovery budget",
-                   local_error ? local_error->message : "?",
+          fp_warn ("gdix51c0: PSK restoration reset boundary complete; "
+                   "starting one fresh %u-attempt recovery budget",
                    max_attempts);
         }
       else
@@ -1925,6 +2087,9 @@ gdix51c0_session_activate_with_attempts (FpiDeviceGdix51c0 *self,
                  failures,
                  max_attempts,
                  local_error ? local_error->message : "?");
+
+      if (started_fresh_budget)
+        continue;
 
       for (guint slept_usec = 0; slept_usec < 1000000; slept_usec += 100000)
         {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Patch, build, and shadow-install fprintd for adaptive print persistence.
+# Patch, build, and shadow-install fprintd for Goodix SPI integration.
 
 set -euo pipefail
 
@@ -75,8 +75,10 @@ trap 'rm -f "$DROPIN_TMP"' EXIT
   printf '%s\n' "$OWNED_MARKER"
   printf '[Service]\n'
   printf 'ExecStart=\n'
-  printf 'ExecStart=%s/fprintd\n' "$INSTALL_DIR"
+  printf 'ExecStart=%s/fprintd --no-timeout\n' "$INSTALL_DIR"
   printf 'Environment=LD_LIBRARY_PATH=%s\n' "$LIBFPRINT_INSTALL_DIR"
+  printf 'Environment=FPRINTD_KEEP_WARM_DRIVERS=gdix51c0\n'
+  printf 'Environment=GDIX51C0_WARM_SESSION=1\n'
 } > "$DROPIN_TMP"
 
 run_root install -d "$INSTALL_DIR" "$DROPIN_DIR"
@@ -87,4 +89,4 @@ if [ "$RESTART" != "0" ]; then
   run_root systemctl restart fprintd.service
 fi
 
-printf 'Installed adaptive fprintd at %s/fprintd\n' "$INSTALL_DIR"
+printf 'Installed Goodix SPI fprintd at %s/fprintd\n' "$INSTALL_DIR"
