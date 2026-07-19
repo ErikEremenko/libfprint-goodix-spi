@@ -205,8 +205,16 @@ gdix51c0_spi_read_typed (FpDevice *dev, int spi_fd,
 
   if (!gdix51c0_header_checksum_ok (hdr))
     {
-      fp_warn ("gdix51c0: header checksum mismatch (%02x %02x %02x %02x)",
-               hdr[0], hdr[1], hdr[2], hdr[3]);
+      /* The 4th header byte is a checksum over the first three (see
+       * goodix_wire_decode_outer_header).  A mismatch means the header — and
+       * therefore the 16-bit length field we are about to trust — is corrupt
+       * or desynchronised.  Reject it like the all-zero / all-FF idle headers
+       * handled above rather than reading a bogus length; the caller's retry
+       * then resynchronises the packet stream. */
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                   "gdix51c0: header checksum mismatch (%02x %02x %02x %02x)",
+                   hdr[0], hdr[1], hdr[2], hdr[3]);
+      return NULL;
     }
 
   /* ACK and response packets may be queued back-to-back in one IRQ-high
