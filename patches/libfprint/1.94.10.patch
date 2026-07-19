@@ -1,0 +1,73 @@
+diff --git a/libfprint/meson.build b/libfprint/meson.build
+index 3449481..3d83013 100644
+--- a/libfprint/meson.build
++++ b/libfprint/meson.build
+@@ -88,2 +88,8 @@ nbis_sources = [
+
++# Private source modules and driver registration copied in by the out-of-tree
++# Goodix SPI project.
++subdir('lib/goodix/common')
++subdir('lib/goodix/chicago')
++subdir('drivers/goodix-spi')
++
+ driver_sources = {
+@@ -157,2 +163,4 @@ driver_sources = {
+
++driver_sources += goodix_spi_driver_sources
++
+ helper_sources = {
+@@ -168,2 +176,4 @@ helper_sources = {
+         [ ],
++    'gpiod' :
++        [ ],
+     'virtual' :
+diff --git a/meson.build b/meson.build
+index 14fb11f..04e95cb 100644
+--- a/meson.build
++++ b/meson.build
+@@ -148,5 +148,7 @@ default_drivers = [
+
++subdir('goodix-spi')
++
+ spi_drivers = [
+-    'elanspi'
+-]
++    'elanspi',
++] + goodix_spi_driver_names
+
+@@ -218,2 +220,4 @@ driver_helper_mapping = {
+
++driver_helper_mapping += goodix_spi_driver_helper_mapping
++
+ driver_helpers = []
+@@ -286,2 +290,9 @@ foreach i : driver_helpers
+         optional_deps += gudev_dep
++    elif i == 'gpiod'
++        gpiod_dep = dependency('libgpiod', version: '>= 2.0', required: false)
++        if not gpiod_dep.found()
++            error('libgpiod >= 2.0 is required for @0@ and possibly others'.format(driver))
++        endif
++
++        optional_deps += gpiod_dep
+     endif
+diff --git a/meson_options.txt b/meson_options.txt
+index 36e3c5a..71bb552 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -34,2 +34,7 @@ option('installed-tests',
+        type: 'boolean',
+        value: true)
++
++option('goodix_spi_developer',
++       description: 'Enable developer-only Goodix SPI capture dumps, tuning knobs, and fault injection',
++       type: 'boolean',
++       value: false)
+diff --git a/tests/meson.build b/tests/meson.build
+index 07c924b..d9da9fe 100644
+--- a/tests/meson.build
++++ b/tests/meson.build
+@@ -323,2 +323,4 @@ endforeach
+
++subdir('goodix-spi')
++
+ # Run udev rule generator with fatal warnings
