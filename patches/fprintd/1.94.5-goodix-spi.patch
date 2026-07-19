@@ -1,0 +1,411 @@
+diff --git a/src/device.c b/src/device.c
+index 4de4a10..eb4b73d 100644
+--- a/src/device.c
++++ b/src/device.c
+@@ -113,12 +113,16 @@ typedef struct
+   /* Required to restart the operation on a retry failure. */
+   FpPrint   *verify_data;
+   GPtrArray *identify_data;
++  GHashTable *verify_print_snapshots;
+   int        enroll_data;
+
+   /* whether we're running an identify, or a verify */
+   FprintDeviceAction     current_action;
+   GCancellable          *current_cancellable;
+   GDBusMethodInvocation *current_cancel_invocation;
++
++  gboolean keep_warm;
++  gboolean warm_closed_for_sleep;
+ } FprintDevicePrivate;
+
+ G_DEFINE_TYPE_WITH_CODE (FprintDevice, fprint_device,
+@@ -237,6 +241,10 @@ fprint_device_dispose (GObject *object)
+
+   g_hash_table_remove_all (priv->clients);
+
++  if (priv->keep_warm && fp_device_is_open (priv->dev) &&
++      priv->current_action == ACTION_NONE)
++    fp_device_close_sync (priv->dev, NULL, NULL);
++
+   G_OBJECT_CLASS (fprint_device_parent_class)->dispose (object);
+ }
+
+@@ -248,6 +256,7 @@ fprint_device_finalize (GObject *object)
+
+   g_clear_handle_id (&priv->verify_stop_wait_timeout_id, g_source_remove);
+   g_hash_table_destroy (priv->clients);
++  g_hash_table_destroy (priv->verify_print_snapshots);
+   session_data_set_new (priv, NULL, NULL);
+   g_clear_object (&priv->auth);
+   g_clear_object (&priv->dev);
+@@ -457,6 +466,10 @@ fprint_device_init (FprintDevice *device)
+                                          g_str_equal,
+                                          g_free,
+                                          _unwatch_name);
++  priv->verify_print_snapshots = g_hash_table_new_full (g_direct_hash,
++                                                        g_direct_equal,
++                                                        g_object_unref,
++                                                        (GDestroyNotify) g_bytes_unref);
+
+   g_signal_connect (device, "g-authorize-method",
+                     G_CALLBACK (action_authorization_handler),
+@@ -466,7 +479,54 @@ fprint_device_init (FprintDevice *device)
+ FprintDevice *
+ fprint_device_new (FpDevice *dev)
+ {
+-  return g_object_new (FPRINT_TYPE_DEVICE, "dev", dev, NULL);
++  FprintDevice *rdev;
++  FprintDevicePrivate *priv;
++  const char *drivers;
++
++  rdev = g_object_new (FPRINT_TYPE_DEVICE, "dev", dev, NULL);
++  priv = fprint_device_get_instance_private (rdev);
++  drivers = g_getenv ("FPRINTD_KEEP_WARM_DRIVERS");
++
++  if (drivers && *drivers)
++    {
++      g_auto(GStrv) names = g_strsplit_set (drivers, ",:; ", -1);
++      const char *driver = fp_device_get_driver (dev);
++
++      for (guint i = 0; names[i]; i++)
++        if (*names[i] && g_str_equal (names[i], driver))
++          {
++            priv->keep_warm = TRUE;
++            break;
++          }
++    }
++
++  return rdev;
++}
++
++gboolean
++fprint_device_keep_warm (FprintDevice *rdev)
++{
++  FprintDevicePrivate *priv = fprint_device_get_instance_private (rdev);
++
++  return priv->keep_warm;
++}
++
++gboolean
++fprint_device_warm_open_sync (FprintDevice *rdev,
++                              GError      **error)
++{
++  FprintDevicePrivate *priv = fprint_device_get_instance_private (rdev);
++  gboolean opened;
++
++  if (!priv->keep_warm || fp_device_is_open (priv->dev))
++    return TRUE;
++
++  g_debug ("Prewarming fingerprint driver %s", fp_device_get_driver (priv->dev));
++  priv->current_action = ACTION_OPEN;
++  opened = fp_device_open_sync (priv->dev, NULL, error);
++  priv->current_action = ACTION_NONE;
++
++  return opened;
+ }
+
+ guint32
+@@ -507,6 +567,71 @@ resume_cb (GObject      *source_obj,
+     g_task_return_boolean (task, TRUE);
+ }
+
++static void
++warm_suspend_close_cb (GObject      *source_obj,
++                       GAsyncResult *res,
++                       gpointer      user_data)
++{
++  g_autoptr(GTask) task = user_data;
++  FprintDevice *rdev = g_task_get_source_object (task);
++  FprintDevicePrivate *priv = fprint_device_get_instance_private (rdev);
++  g_autoptr(GError) error = NULL;
++
++  priv->current_action = ACTION_NONE;
++  if (!fp_device_close_finish (FP_DEVICE (source_obj), res, &error))
++    {
++      g_task_return_error (task, g_steal_pointer (&error));
++      return;
++    }
++
++  priv->warm_closed_for_sleep = TRUE;
++  g_message ("Closed warm fingerprint device for suspend");
++  g_task_return_boolean (task, TRUE);
++}
++
++static void
++warm_resume_open_cb (GObject      *source_obj,
++                     GAsyncResult *res,
++                     gpointer      user_data)
++{
++  g_autoptr(GTask) task = user_data;
++  FprintDevice *rdev = g_task_get_source_object (task);
++  FprintDevicePrivate *priv = fprint_device_get_instance_private (rdev);
++  g_autoptr(GError) error = NULL;
++  g_autoptr(SessionData) session = NULL;
++  g_autoptr(GDBusMethodInvocation) invocation = NULL;
++
++  priv->current_action = ACTION_NONE;
++  if (!fp_device_open_finish (FP_DEVICE (source_obj), res, &error))
++    {
++      session = session_data_get (priv);
++      if (session && session->invocation)
++        {
++          g_autoptr(GError) dbus_error = NULL;
++
++          invocation = g_steal_pointer (&session->invocation);
++          dbus_error = g_error_new (FPRINT_ERROR,
++                                    FPRINT_ERROR_INTERNAL,
++                                    "Warm open failed with error: %s",
++                                    error->message);
++          g_dbus_method_invocation_return_gerror (invocation, dbus_error);
++          session_data_set_new (priv, NULL, NULL);
++        }
++      g_task_return_error (task, g_steal_pointer (&error));
++      return;
++    }
++
++  g_message ("Reopened warm fingerprint device after resume");
++  session = session_data_get (priv);
++  if (session && session->invocation)
++    {
++      invocation = g_steal_pointer (&session->invocation);
++      g_debug ("completing Claim that waited for post-resume prewarm");
++      fprint_dbus_device_complete_claim (FPRINT_DBUS_DEVICE (rdev), invocation);
++    }
++  g_task_return_boolean (task, TRUE);
++}
++
+ void
+ fprint_device_suspend (FprintDevice       *rdev,
+                        GAsyncReadyCallback callback,
+@@ -518,6 +643,18 @@ fprint_device_suspend (FprintDevice       *rdev,
+   /* Just forward to libfprint. */
+
+   task = g_task_new (rdev, NULL, callback, user_data);
++
++  if (priv->keep_warm && priv->current_action == ACTION_NONE &&
++      fp_device_is_open (priv->dev))
++    {
++      priv->current_action = ACTION_CLOSE;
++      fp_device_close (priv->dev, NULL, warm_suspend_close_cb, task);
++      return;
++    }
++
++  if (priv->keep_warm && fp_device_is_open (priv->dev))
++    g_message ("Suspending active warm fingerprint action");
++
+   fp_device_suspend (priv->dev, NULL, suspend_cb, task);
+ }
+
+@@ -532,6 +669,18 @@ fprint_device_resume (FprintDevice       *rdev,
+   /* Just forward to libfprint. */
+
+   task = g_task_new (rdev, NULL, callback, user_data);
++
++  if (priv->keep_warm && priv->warm_closed_for_sleep)
++    {
++      priv->warm_closed_for_sleep = FALSE;
++      priv->current_action = ACTION_OPEN;
++      fp_device_open (priv->dev, NULL, warm_resume_open_cb, task);
++      return;
++    }
++
++  if (priv->keep_warm && fp_device_is_open (priv->dev))
++    g_message ("Resuming active warm fingerprint action");
++
+   fp_device_resume (priv->dev, NULL, resume_cb, task);
+ }
+
+@@ -992,7 +1141,8 @@ _fprint_device_client_vanished (GDBusConnection *connection,
+        * was already closing. */
+       g_clear_pointer (&session, session_data_unref);
+       session = session_data_get (priv);
+-      if (session && !fp_device_close_sync (priv->dev, NULL, &error))
++      if (session && !priv->keep_warm &&
++          !fp_device_close_sync (priv->dev, NULL, &error))
+         g_critical ("Error closing device after disconnect: %s", error->message);
+
+       session_data_set_new (priv, NULL, NULL);
+@@ -1120,6 +1270,20 @@ fprint_device_claim (FprintDBusDevice      *dbus_dev,
+
+   g_debug ("user '%s' claiming the device: %d", session->username, priv->id);
+
++  if (priv->keep_warm && priv->current_action == ACTION_OPEN)
++    {
++      g_debug ("Claim waiting for background prewarm on device %d", priv->id);
++      return TRUE;
++    }
++
++  if (priv->keep_warm && fp_device_is_open (priv->dev))
++    {
++      g_debug ("claimed prewarmed device %d", priv->id);
++      fprint_dbus_device_complete_claim (FPRINT_DBUS_DEVICE (rdev), invocation);
++      g_clear_object (&session->invocation);
++      return TRUE;
++    }
++
+   priv->current_action = ACTION_OPEN;
+   fp_device_open (priv->dev, NULL, (GAsyncReadyCallback) dev_open_cb, rdev);
+
+@@ -1198,6 +1362,14 @@ fprint_device_release (FprintDBusDevice      *dbus_dev,
+       return TRUE;
+     }
+
++  if (priv->keep_warm && fp_device_is_open (priv->dev))
++    {
++      session_data_set_new (priv, NULL, NULL);
++      g_debug ("released device %d; warm session retained", priv->id);
++      fprint_dbus_device_complete_release (FPRINT_DBUS_DEVICE (rdev), invocation);
++      return TRUE;
++    }
++
+   session->invocation = g_object_ref (invocation);
+
+   priv->current_action = ACTION_CLOSE;
+@@ -1535,6 +1707,65 @@ stoppable_action_stop (FprintDevice          *rdev,
+     stoppable_action_completed (rdev);
+ }
+
++static void
++snapshot_verify_print (FprintDevice *rdev,
++                       FpPrint      *print)
++{
++  FprintDevicePrivate *priv = fprint_device_get_instance_private (rdev);
++  g_autoptr(GError) error = NULL;
++  g_autofree guchar *serialized = NULL;
++  gsize size;
++
++  if (!fp_print_serialize (print, &serialized, &size, &error))
++    {
++      g_warning ("Failed to snapshot print before verification: %s",
++                 error->message);
++      return;
++    }
++
++  g_hash_table_replace (priv->verify_print_snapshots,
++                        g_object_ref (print),
++                        g_bytes_new_take (g_steal_pointer (&serialized), size));
++}
++
++static void
++save_changed_verify_print (FprintDevice *rdev,
++                           FpPrint      *print)
++{
++  FprintDevicePrivate *priv = fprint_device_get_instance_private (rdev);
++  GBytes *before;
++  g_autoptr(GBytes) after = NULL;
++  g_autoptr(GError) error = NULL;
++  g_autofree guchar *serialized = NULL;
++  gsize size;
++  int r;
++
++  before = g_hash_table_lookup (priv->verify_print_snapshots, print);
++  if (!before)
++    return;
++  if (!fp_print_serialize (print, &serialized, &size, &error))
++    {
++      g_warning ("Failed to serialize updated print after verification: %s",
++                 error->message);
++      return;
++    }
++  after = g_bytes_new_take (g_steal_pointer (&serialized), size);
++  if (g_bytes_equal (before, after))
++    return;
++
++  r = store.print_data_save (print);
++  if (r != 0)
++    {
++      g_warning ("Failed to save print updated during verification: %d", r);
++      return;
++    }
++
++  g_debug ("Saved print updated during successful verification");
++  g_hash_table_replace (priv->verify_print_snapshots,
++                        g_object_ref (print),
++                        g_steal_pointer (&after));
++}
++
+ static void
+ match_cb (FpDevice *device,
+           FpPrint  *match,
+@@ -1552,6 +1783,9 @@ match_cb (FpDevice *device,
+   cancelled = g_cancellable_is_cancelled (priv->current_cancellable);
+   matched = match != NULL && cancelled == FALSE;
+
++  if (matched)
++    save_changed_verify_print (rdev, match);
++
+   report_verify_status (rdev, matched, error);
+ }
+
+@@ -1584,6 +1818,7 @@ verify_cb (FpDevice *dev, GAsyncResult *res, void *user_data)
+   else
+     {
+       g_clear_object (&priv->verify_data);
++      g_hash_table_remove_all (priv->verify_print_snapshots);
+
+       if (error)
+         {
+@@ -1629,6 +1864,7 @@ identify_cb (FpDevice *dev, GAsyncResult *res, void *user_data)
+   else
+     {
+       g_clear_pointer (&priv->identify_data, g_ptr_array_unref);
++      g_hash_table_remove_all (priv->verify_print_snapshots);
+
+       if (error)
+         {
+@@ -1713,6 +1949,9 @@ fprint_device_verify_start (FprintDBusDevice      *dbus_dev,
+       g_debug ("start identification device %d", priv->id);
+       priv->current_cancellable = g_cancellable_new ();
+       priv->identify_data = g_ptr_array_ref (gallery);
++      g_hash_table_remove_all (priv->verify_print_snapshots);
++      for (guint i = 0; i < gallery->len; i++)
++        snapshot_verify_print (rdev, g_ptr_array_index (gallery, i));
+       fp_device_identify (priv->dev, gallery, priv->current_cancellable,
+                           match_cb, rdev, NULL,
+                           (GAsyncReadyCallback) identify_cb, rdev);
+@@ -1748,6 +1987,8 @@ fprint_device_verify_start (FprintDBusDevice      *dbus_dev,
+       priv->current_action = ACTION_VERIFY;
+       priv->current_cancellable = g_cancellable_new ();
+       priv->verify_data = g_object_ref (print);
++      g_hash_table_remove_all (priv->verify_print_snapshots);
++      snapshot_verify_print (rdev, print);
+       fp_device_verify (priv->dev, print, priv->current_cancellable,
+                         match_cb, rdev, NULL,
+                         (GAsyncReadyCallback) verify_cb, rdev);
+diff --git a/src/fprintd.h b/src/fprintd.h
+index d414e68..82fb8cd 100644
+--- a/src/fprintd.h
++++ b/src/fprintd.h
+@@ -95,6 +95,9 @@ struct _FprintDevice
+
+ FprintDevice *fprint_device_new (FpDevice *dev);
+ guint32 _fprint_device_get_id (FprintDevice *rdev);
++gboolean fprint_device_keep_warm (FprintDevice *rdev);
++gboolean fprint_device_warm_open_sync (FprintDevice *rdev,
++                                       GError      **error);
+
+ void fprint_device_suspend (FprintDevice       *rdev,
+                             GAsyncReadyCallback callback,
+diff --git a/src/manager.c b/src/manager.c
+index a3dae5d..aa0bb35 100644
+--- a/src/manager.c
++++ b/src/manager.c
+@@ -400,6 +400,18 @@ device_added_cb (FprintManager *manager, FpDevice *device, FpContext *context)
+   g_signal_connect (G_OBJECT (rdev), "notify::busy",
+                     G_CALLBACK (fprint_manager_busy_notified), manager);
+
++  if (fprint_device_keep_warm (rdev))
++    {
++      g_autoptr(GError) error = NULL;
++
++      if (!fprint_device_warm_open_sync (rdev, &error))
++        g_warning ("Could not prewarm fingerprint device: %s",
++                   error ? error->message : "unknown error");
++      else
++        g_message ("Prewarmed fingerprint device using driver %s",
++                   fp_device_get_driver (device));
++    }
++
+   path = get_device_path (rdev);
+
+   object = fprint_dbus_object_skeleton_new (path);
