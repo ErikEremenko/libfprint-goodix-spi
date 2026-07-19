@@ -1,5 +1,5 @@
 diff --git a/src/device.c b/src/device.c
-index 4de4a10..eb4b73d 100644
+index 4de4a10..98e5548 100644
 --- a/src/device.c
 +++ b/src/device.c
 @@ -113,12 +113,16 @@ typedef struct
@@ -246,10 +246,25 @@ index 4de4a10..eb4b73d 100644
    priv->current_action = ACTION_OPEN;
    fp_device_open (priv->dev, NULL, (GAsyncReadyCallback) dev_open_cb, rdev);
 
-@@ -1198,6 +1362,14 @@ fprint_device_release (FprintDBusDevice      *dbus_dev,
+@@ -1198,6 +1362,29 @@ fprint_device_release (FprintDBusDevice      *dbus_dev,
        return TRUE;
      }
 
++  if (priv->keep_warm && priv->current_action == ACTION_OPEN)
++    {
++      /* A warm (re)open — e.g. the post-resume reopen started by
++       * fprint_device_resume() — is in flight, so priv->dev is not open yet and
++       * the retain branch below is skipped. Falling through to the close path
++       * would set session->invocation and start a close that races
++       * warm_resume_open_cb() over the same invocation (a NULL-invocation deref
++       * in dev_close_cb) and runs concurrently with the pending open. Refuse the
++       * release until the reopen settles; the caller can retry shortly. */
++      g_set_error_literal (&error, FPRINT_ERROR, FPRINT_ERROR_ALREADY_IN_USE,
++                           "Device is completing a warm reopen; retry shortly");
++      g_dbus_method_invocation_return_gerror (invocation, error);
++      return TRUE;
++    }
++
 +  if (priv->keep_warm && fp_device_is_open (priv->dev))
 +    {
 +      session_data_set_new (priv, NULL, NULL);
@@ -261,7 +276,7 @@ index 4de4a10..eb4b73d 100644
    session->invocation = g_object_ref (invocation);
 
    priv->current_action = ACTION_CLOSE;
-@@ -1535,6 +1707,65 @@ stoppable_action_stop (FprintDevice          *rdev,
+@@ -1535,6 +1722,65 @@ stoppable_action_stop (FprintDevice          *rdev,
      stoppable_action_completed (rdev);
  }
 
@@ -327,7 +342,7 @@ index 4de4a10..eb4b73d 100644
  static void
  match_cb (FpDevice *device,
            FpPrint  *match,
-@@ -1552,6 +1783,9 @@ match_cb (FpDevice *device,
+@@ -1552,6 +1798,9 @@ match_cb (FpDevice *device,
    cancelled = g_cancellable_is_cancelled (priv->current_cancellable);
    matched = match != NULL && cancelled == FALSE;
 
@@ -337,7 +352,7 @@ index 4de4a10..eb4b73d 100644
    report_verify_status (rdev, matched, error);
  }
 
-@@ -1584,6 +1818,7 @@ verify_cb (FpDevice *dev, GAsyncResult *res, void *user_data)
+@@ -1584,6 +1833,7 @@ verify_cb (FpDevice *dev, GAsyncResult *res, void *user_data)
    else
      {
        g_clear_object (&priv->verify_data);
@@ -345,7 +360,7 @@ index 4de4a10..eb4b73d 100644
 
        if (error)
          {
-@@ -1629,6 +1864,7 @@ identify_cb (FpDevice *dev, GAsyncResult *res, void *user_data)
+@@ -1629,6 +1879,7 @@ identify_cb (FpDevice *dev, GAsyncResult *res, void *user_data)
    else
      {
        g_clear_pointer (&priv->identify_data, g_ptr_array_unref);
@@ -353,7 +368,7 @@ index 4de4a10..eb4b73d 100644
 
        if (error)
          {
-@@ -1713,6 +1949,9 @@ fprint_device_verify_start (FprintDBusDevice      *dbus_dev,
+@@ -1713,6 +1964,9 @@ fprint_device_verify_start (FprintDBusDevice      *dbus_dev,
        g_debug ("start identification device %d", priv->id);
        priv->current_cancellable = g_cancellable_new ();
        priv->identify_data = g_ptr_array_ref (gallery);
@@ -363,7 +378,7 @@ index 4de4a10..eb4b73d 100644
        fp_device_identify (priv->dev, gallery, priv->current_cancellable,
                            match_cb, rdev, NULL,
                            (GAsyncReadyCallback) identify_cb, rdev);
-@@ -1748,6 +1987,8 @@ fprint_device_verify_start (FprintDBusDevice      *dbus_dev,
+@@ -1748,6 +2002,8 @@ fprint_device_verify_start (FprintDBusDevice      *dbus_dev,
        priv->current_action = ACTION_VERIFY;
        priv->current_cancellable = g_cancellable_new ();
        priv->verify_data = g_object_ref (print);
