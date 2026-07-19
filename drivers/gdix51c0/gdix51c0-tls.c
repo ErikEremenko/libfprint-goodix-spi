@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include <openssl/bio.h>
+#include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <openssl/sslerr.h>
@@ -652,4 +653,10 @@ gdix51c0_tls_free (Gdix51c0Tls *tls)
       tls->ctx = NULL;
     }
   g_clear_pointer (&tls->rd_buf, g_free);
+
+  /* Wipe the pre-shared key so the plaintext does not linger in freed heap.
+   * OPENSSL_cleanse is not elided by the optimiser the way memset on a
+   * soon-to-be-freed buffer can be. */
+  OPENSSL_cleanse (tls->psk, sizeof (tls->psk));
+  tls->psk_len = 0;
 }
