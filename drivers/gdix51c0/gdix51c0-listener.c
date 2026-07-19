@@ -24,6 +24,16 @@
  * we'd rather drop old packets than grow without bound. */
 #define LISTENER_QUEUE_CAP 16
 
+/* Ceiling on bytes buffered across ALL 256 cmd-byte queues combined.  The
+ * per-queue count cap alone bounds one queue at LISTENER_QUEUE_CAP packets,
+ * but a faulty or hostile sensor can hold IRQ high and stream maximal (~64 KiB)
+ * packets with rotating first bytes, lazily creating up to 256 queues and
+ * pinning ~256 MiB of heap before drain_all runs at the next session boundary.
+ * A global budget caps that. Normal operation keeps only a few small packets
+ * queued, so this is far above any legitimate backlog and never trips in
+ * practice. */
+#define LISTENER_TOTAL_BYTE_CAP (4u * 1024u * 1024u)
+
 /* Hardware acceptance hooks are compiled out of release builds. */
 #ifdef GOODIX_SPI_DEVELOPER
 #define GDIX51C0_FAULT_ACK_TIMEOUT_ONCE_ENV \
@@ -61,10 +71,11 @@ struct Gdix51c0Listener
    * cannot happen. */
   GMutex spi_lock;
 
-  /* dispatch_lock protects queues[] and is paired with cond. */
+  /* dispatch_lock protects queues[], queued_bytes and is paired with cond. */
   GMutex   dispatch_lock;
   GCond    cond;
   GQueue  *queues[256];   /* one queue per inner-cmd byte, lazily allocated */
+  gsize    queued_bytes;  /* running sum of ->len across all queued packets */
 
 #ifdef GOODIX_SPI_DEVELOPER
   gint fault_ack_timeout_used;       /* atomic */
@@ -116,6 +127,20 @@ listener_queue_for (Gdix51c0Listener *self, guint8 cmd)
   return q;
 }
 
+/* Pop and free the head packet of @q, keeping queued_bytes in sync.
+ * Caller must hold dispatch_lock. */
+static void
+listener_drop_head_locked (Gdix51c0Listener *self, GQueue *q)
+{
+  ListenerPacket *p = g_queue_pop_head (q);
+
+  if (!p)
+    return;
+
+  self->queued_bytes -= p->len;
+  listener_packet_free (p);
+}
+
 /* Caller must hold dispatch_lock. */
 static void
 listener_enqueue_locked (Gdix51c0Listener *self,
@@ -127,11 +152,35 @@ listener_enqueue_locked (Gdix51c0Listener *self,
 
   if (g_queue_get_length (q) >= LISTENER_QUEUE_CAP)
     {
-      ListenerPacket *old = g_queue_pop_head (q);
+      fp_dbg ("gdix51c0: listener queue cmd=0x%02x full, dropping oldest",
+              cmd);
+      listener_drop_head_locked (self, q);
+    }
 
-      fp_dbg ("gdix51c0: listener queue cmd=0x%02x full, dropping oldest "
-              "(%zu B)", cmd, old ? old->len : 0);
-      listener_packet_free (old);
+  /* Enforce the global byte ceiling so a sensor streaming maximal packets with
+   * rotating first bytes cannot pin unbounded heap across the 256 queues.
+   * Evict oldest packets — preferring this cmd's queue, then any other
+   * non-empty queue — until the incoming packet fits. */
+  while (self->queued_bytes + len > LISTENER_TOTAL_BYTE_CAP)
+    {
+      if (!g_queue_is_empty (q))
+        {
+          listener_drop_head_locked (self, q);
+          continue;
+        }
+
+      GQueue *victim = NULL;
+      for (guint i = 0; i < G_N_ELEMENTS (self->queues); i++)
+        if (self->queues[i] && !g_queue_is_empty (self->queues[i]))
+          {
+            victim = self->queues[i];
+            break;
+          }
+
+      if (!victim)
+        break;  /* nothing left to evict; the lone packet is <= 64 KiB */
+
+      listener_drop_head_locked (self, victim);
     }
 
   ListenerPacket *p = g_new0 (ListenerPacket, 1);
@@ -139,6 +188,7 @@ listener_enqueue_locked (Gdix51c0Listener *self,
   p->data = data;
   p->len  = len;
   g_queue_push_tail (q, p);
+  self->queued_bytes += len;
 }
 
 /* Read every pending packet while IRQ stays high.  Holds spi_lock for each
@@ -181,26 +231,11 @@ listener_drain_irq_high (Gdix51c0Listener *self)
           return;
         }
 
-      if (n == 0)
-        {
-          g_free (payload);
-          /* Idle/empty read while IRQ is still high.  Do NOT spin re-reading
-           * the SPI bus: during an image capture the sensor holds IRQ high for
-           * its ~73 ms row-by-row readout, and hammering SPI in that window
-           * corrupts the readout partway (the frame comes back valid only down
-           * to a fixed row, the rest garbage).  Windows stays silent on the bus
-           * during capture.  Back off so we don't disturb the analog readout;
-           * a real packet will still be drained on the next iteration. */
-#ifdef GOODIX_SPI_DEVELOPER
-          const char *idle_us = g_getenv ("GDIX51C0_LISTENER_IDLE_US");
-          g_usleep (idle_us && *idle_us
-                    ? (gulong) g_ascii_strtoull (idle_us, NULL, 0)
-                    : 3000);
-#else
-          g_usleep (3000);
-#endif
-          continue;
-        }
+      /* gdix51c0_spi_read_typed() guarantees a non-NULL return has n > 0: an
+       * empty or malformed response is reported as an error and handled by the
+       * !payload path above.  (A previous n == 0 idle/back-off branch here was
+       * unreachable, since g_malloc(0) returns NULL in GLib; the sensor is also
+       * suppressed on this thread during the IRQ-high capture readout.) */
 
       /* Dispatch by payload[0] — that is the inner cmd byte the python
        * reference and Windows WBDI log call "packet type":
@@ -400,11 +435,8 @@ gdix51c0_listener_drain_all (Gdix51c0Listener *self)
   for (guint i = 0; i < G_N_ELEMENTS (self->queues); i++)
     {
       if (self->queues[i])
-        {
-          ListenerPacket *p;
-          while ((p = g_queue_pop_head (self->queues[i])) != NULL)
-            listener_packet_free (p);
-        }
+        while (!g_queue_is_empty (self->queues[i]))
+          listener_drop_head_locked (self, self->queues[i]);
     }
   g_mutex_unlock (&self->dispatch_lock);
 }
@@ -418,11 +450,8 @@ gdix51c0_listener_drain_cmd (Gdix51c0Listener *self, guint8 cmd)
   g_mutex_lock (&self->dispatch_lock);
   GQueue *q = self->queues[cmd];
   if (q)
-    {
-      ListenerPacket *p;
-      while ((p = g_queue_pop_head (q)) != NULL)
-        listener_packet_free (p);
-    }
+    while (!g_queue_is_empty (q))
+      listener_drop_head_locked (self, q);
   g_mutex_unlock (&self->dispatch_lock);
 }
 
@@ -631,6 +660,7 @@ gdix51c0_listener_await (Gdix51c0Listener *self,
               gsize   len  = p->len;
 
               g_free (p);
+              self->queued_bytes -= len;
               g_mutex_unlock (&self->dispatch_lock);
 
               if (out_len)

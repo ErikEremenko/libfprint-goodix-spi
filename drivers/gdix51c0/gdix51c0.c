@@ -464,8 +464,19 @@ gdix51c0_open_thread (gpointer user_data)
 
   complete->dev = g_object_ref (open_thread->dev);
   if (!gdix51c0_session_activate (self, &complete->error))
-    fp_warn ("gdix51c0: background warm activation failed: %s",
-             complete->error ? complete->error->message : "?");
+    {
+      fp_warn ("gdix51c0: background warm activation failed: %s",
+               complete->error ? complete->error->message : "?");
+
+      /* gdix51c0_open_complete_main() decides success purely on
+       * complete->error == NULL. Guarantee a failed activation always carries
+       * an error so a FALSE return can never be reported as a successful open
+       * on a half-initialised session, even if some future activation path
+       * forgets to set one. */
+      if (complete->error == NULL)
+        g_set_error_literal (&complete->error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                             "gdix51c0: activation failed without a reported error");
+    }
 
   g_main_context_invoke_full (
     open_thread->context,
