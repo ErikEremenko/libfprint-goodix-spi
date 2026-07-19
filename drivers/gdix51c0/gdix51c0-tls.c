@@ -328,14 +328,14 @@ gdix51c0_tls_init (Gdix51c0Tls *tls,
   if (!tls->ctx)
     {
       g_propagate_error (error, gdix51c0_openssl_error ("SSL_CTX_new"));
-      return FALSE;
+      goto err;
     }
   SSL_CTX_set_min_proto_version (tls->ctx, TLS1_2_VERSION);
   SSL_CTX_set_max_proto_version (tls->ctx, TLS1_2_VERSION);
   if (SSL_CTX_set_cipher_list (tls->ctx, "PSK-AES128-GCM-SHA256") != 1)
     {
       g_propagate_error (error, gdix51c0_openssl_error ("set_cipher_list"));
-      return FALSE;
+      goto err;
     }
   /* Tell OpenSSL to skip cert verification — we have no cert chain on
    * either side; PSK alone authenticates. */
@@ -347,7 +347,7 @@ gdix51c0_tls_init (Gdix51c0Tls *tls,
   if (!tls->ssl)
     {
       g_propagate_error (error, gdix51c0_openssl_error ("SSL_new"));
-      return FALSE;
+      goto err;
     }
 
   /* SSL_set_app_data is shorthand for ex_data slot 0 — that's how the
@@ -358,13 +358,20 @@ gdix51c0_tls_init (Gdix51c0Tls *tls,
   if (!tls->bio)
     {
       g_propagate_error (error, gdix51c0_openssl_error ("BIO_new"));
-      return FALSE;
+      goto err;
     }
   BIO_set_data (tls->bio, tls);
   SSL_set_bio (tls->ssl, tls->bio, tls->bio);
   /* tls->bio is now owned by ssl */
   SSL_set_accept_state (tls->ssl);
   return TRUE;
+
+err:
+  /* Free whatever was allocated before the failure (gdix51c0_tls_free is
+   * NULL-safe for each partial state and also cleanses the PSK) so a failed
+   * init does not leak the SSL_CTX / SSL. */
+  gdix51c0_tls_free (tls);
+  return FALSE;
 }
 
 static gboolean
