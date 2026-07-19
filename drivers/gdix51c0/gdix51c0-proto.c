@@ -217,12 +217,25 @@ gdix51c0_spi_read_typed (FpDevice *dev, int spi_fd,
       return NULL;
     }
 
+  /* A valid packet always carries at least a one-byte command in its payload.
+   * Reject a zero-length payload explicitly: g_malloc(0) returns NULL in GLib,
+   * so returning it would look identical to an I/O failure to every caller —
+   * but with *error left unset. The final-attempt g_propagate_error(error,
+   * NULL) in the gdix51c0_cmd_* helpers would then emit a GLib critical and
+   * leave *error NULL, which gdix51c0_open_complete_main() misreads as a
+   * successful open on a half-initialised session. */
+  if (length == 0)
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
+                           "gdix51c0: read returned zero-length payload");
+      return NULL;
+    }
+
   /* ACK and response packets may be queued back-to-back in one IRQ-high
    * window. Read exactly the advertised length so this transfer cannot consume
    * the following packet's header. */
   guint8 *payload = g_malloc (length);
-  if (length > 0 &&
-      !gdix51c0_spi_xfer_read (spi_fd, payload, length, error))
+  if (!gdix51c0_spi_xfer_read (spi_fd, payload, length, error))
     {
       g_free (payload);
       return NULL;
