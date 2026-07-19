@@ -231,26 +231,11 @@ listener_drain_irq_high (Gdix51c0Listener *self)
           return;
         }
 
-      if (n == 0)
-        {
-          g_free (payload);
-          /* Idle/empty read while IRQ is still high.  Do NOT spin re-reading
-           * the SPI bus: during an image capture the sensor holds IRQ high for
-           * its ~73 ms row-by-row readout, and hammering SPI in that window
-           * corrupts the readout partway (the frame comes back valid only down
-           * to a fixed row, the rest garbage).  Windows stays silent on the bus
-           * during capture.  Back off so we don't disturb the analog readout;
-           * a real packet will still be drained on the next iteration. */
-#ifdef GOODIX_SPI_DEVELOPER
-          const char *idle_us = g_getenv ("GDIX51C0_LISTENER_IDLE_US");
-          g_usleep (idle_us && *idle_us
-                    ? (gulong) g_ascii_strtoull (idle_us, NULL, 0)
-                    : 3000);
-#else
-          g_usleep (3000);
-#endif
-          continue;
-        }
+      /* gdix51c0_spi_read_typed() guarantees a non-NULL return has n > 0: an
+       * empty or malformed response is reported as an error and handled by the
+       * !payload path above.  (A previous n == 0 idle/back-off branch here was
+       * unreachable, since g_malloc(0) returns NULL in GLib; the sensor is also
+       * suppressed on this thread during the IRQ-high capture readout.) */
 
       /* Dispatch by payload[0] — that is the inner cmd byte the python
        * reference and Windows WBDI log call "packet type":
